@@ -1,0 +1,1968 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Physics Sandbox</title>
+
+<style>
+* {
+    box-sizing: border-box;
+    user-select: none;
+}
+
+body {
+    margin: 0;
+    overflow: hidden;
+    background: #111;
+    font-family: Arial, sans-serif;
+}
+
+canvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    display: block;
+    background: #111;
+}
+
+#ui {
+    position: fixed;
+    top: 15px;
+    left: 15px;
+    width: 245px;
+    padding: 12px;
+    border-radius: 14px;
+    background: rgba(20,20,20,.92);
+    color: white;
+    z-index: 10;
+    box-shadow: 0 10px 30px rgba(0,0,0,.4);
+}
+
+#elements {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 5px;
+}
+
+button {
+    border: 0;
+    border-radius: 7px;
+    padding: 8px 4px;
+    background: #292929;
+    color: white;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+button:hover {
+    background: #3a3a3a;
+}
+
+button.active {
+    background: #5757ff;
+}
+
+#uploadButton {
+    width: 100%;
+    margin-top: 8px;
+}
+
+#imageInput {
+    display: none;
+}
+
+#controls {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+#controls button {
+    flex: 1;
+}
+
+.label {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #aaa;
+}
+
+input[type="range"] {
+    width: 100%;
+}
+
+#stats {
+    margin-top: 8px;
+    color: #999;
+    font-size: 11px;
+}
+</style>
+</head>
+
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div id="ui">
+
+    <div id="elements">
+
+        <button data-element="sand">Sand</button>
+        <button data-element="water">Water</button>
+        <button data-element="dirt">Dirt</button>
+
+        <button data-element="acid">Acid</button>
+        <button data-element="oil">Oil</button>
+        <button data-element="lava">Lava</button>
+
+        <button data-element="stone">Stone</button>
+        <button data-element="ice">Ice</button>
+        <button data-element="salt">Salt</button>
+
+        <button data-element="plant">Plant</button>
+        <button data-element="metal">Metal</button>
+        <button data-element="fire">Fire</button>
+
+        <button data-element="smoke">Smoke</button>
+        <button data-element="steam">Steam</button>
+        <button data-element="explosion">Boom</button>
+
+    </div>
+
+    <button id="uploadButton">
+        Upload Picture
+    </button>
+
+    <input
+        id="imageInput"
+        type="file"
+        accept="image/*"
+    >
+
+    <div class="label">
+        Brush:
+        <span id="brushValue">12</span>
+    </div>
+
+    <input
+        id="brush"
+        type="range"
+        min="2"
+        max="40"
+        value="12"
+    >
+
+    <div id="controls">
+        <button id="pause">Pause</button>
+        <button id="clear">Clear</button>
+    </div>
+
+    <div id="stats">
+        FPS: <span id="fps">60</span><br>
+        Particles: <span id="particleCount">0</span>
+    </div>
+
+</div>
+
+<script>
+
+"use strict";
+
+
+// ============================================================
+// CANVAS
+// ============================================================
+
+const canvas =
+    document.getElementById("canvas");
+
+const ctx =
+    canvas.getContext("2d", {
+        alpha: false
+    });
+
+let W = innerWidth;
+let H = innerHeight;
+
+canvas.width = W;
+canvas.height = H;
+
+
+// ============================================================
+// SETTINGS
+// ============================================================
+
+const CELL = 5;
+
+const MAX_PARTICLES = 9000;
+
+const GRAVITY = 0.45;
+
+// FIRE SETTINGS
+const FIRE_SPREAD_RADIUS = 10;
+const FIRE_DELAY = 15;
+const FIRE_LIFE = 35;
+
+let particles = [];
+
+let images = [];
+
+let paused = false;
+
+let selectedElement = "sand";
+
+let brushSize = 12;
+
+let mouseX = 0;
+let mouseY = 0;
+
+let mouseDown = false;
+
+
+// ============================================================
+// SPATIAL GRID
+// ============================================================
+
+let GRID_W = 0;
+let GRID_H = 0;
+
+let grid = [];
+
+
+function resizeGrid() {
+
+    GRID_W =
+        Math.ceil(W / CELL);
+
+    GRID_H =
+        Math.ceil(H / CELL);
+
+    grid =
+        new Int32Array(
+            GRID_W * GRID_H
+        );
+
+    grid.fill(-1);
+}
+
+
+resizeGrid();
+
+
+window.addEventListener(
+    "resize",
+    () => {
+
+        W = innerWidth;
+        H = innerHeight;
+
+        canvas.width = W;
+        canvas.height = H;
+
+        resizeGrid();
+    }
+);
+
+
+// ============================================================
+// GRID
+// ============================================================
+
+function gridIndex(x, y) {
+
+    const gx =
+        (x / CELL) | 0;
+
+    const gy =
+        (y / CELL) | 0;
+
+    if (
+        gx < 0 ||
+        gx >= GRID_W ||
+        gy < 0 ||
+        gy >= GRID_H
+    ) {
+        return -2;
+    }
+
+    return gy * GRID_W + gx;
+}
+
+
+function rebuildGrid() {
+
+    grid.fill(-1);
+
+    for (
+        let i = 0;
+        i < particles.length;
+        i++
+    ) {
+
+        const p =
+            particles[i];
+
+        if (p.dead)
+            continue;
+
+
+        const index =
+            gridIndex(
+                p.x,
+                p.y
+            );
+
+
+        if (index >= 0)
+            grid[index] = i;
+    }
+}
+
+
+function occupied(x, y) {
+
+    const index =
+        gridIndex(x, y);
+
+    if (index === -2)
+        return true;
+
+    return grid[index] !== -1;
+}
+
+
+// ============================================================
+// COLORS
+// ============================================================
+
+const COLORS = {
+
+    sand: "#d9bd72",
+    water: "#3d8cff",
+    dirt: "#795548",
+    acid: "#79ff3b",
+    oil: "#181818",
+    lava: "#ff5916",
+    stone: "#777",
+    ice: "#aeeaff",
+    salt: "#eee",
+    plant: "#3baa4b",
+    metal: "#aaa",
+    fire: "#ff8c00",
+    smoke: "#777",
+    steam: "#ddd"
+};
+
+
+function colorFor(type) {
+
+    return COLORS[type] || "#fff";
+}
+
+
+// ============================================================
+// PARTICLE
+// ============================================================
+
+class Particle {
+
+    constructor(
+        x,
+        y,
+        type,
+        color = null
+    ) {
+
+        this.x = x;
+        this.y = y;
+
+        this.type = type;
+
+        this.vx = 0;
+        this.vy = 0;
+
+        this.size = CELL;
+
+        this.color =
+            color ||
+            colorFor(type);
+
+        this.dead = false;
+
+        this.imagePiece = false;
+
+        // FIRE STATE
+        this.burning = false;
+        this.burnTimer = 0;
+        this.burnLife = 0;
+
+        // Gas lifetime
+        this.life =
+            120 +
+            Math.random() * 150;
+    }
+
+
+    // ========================================================
+    // START BURNING
+    // ========================================================
+
+    startBurning() {
+
+        if (this.burning)
+            return;
+
+
+        // Things fire cannot burn
+        if (
+            this.type === "stone" ||
+            this.type === "metal" ||
+            this.type === "ice" ||
+            this.type === "water" ||
+            this.type === "acid" ||
+            this.type === "lava"
+        ) {
+
+            return;
+        }
+
+
+        this.burning = true;
+
+        // Delay before it spreads
+        this.burnTimer =
+            FIRE_DELAY +
+            Math.random() * 8;
+
+        // How long it remains burning
+        this.burnLife =
+            FIRE_LIFE +
+            Math.random() * 20;
+    }
+
+
+    // ========================================================
+    // UPDATE
+    // ========================================================
+
+    update() {
+
+        if (this.dead)
+            return;
+
+
+        // ====================================================
+        // FIRE CHAIN REACTION
+        // ====================================================
+
+        if (this.burning) {
+
+            this.burnTimer--;
+
+
+            // Spread after delay
+            if (
+                this.burnTimer <= 0
+            ) {
+
+                spreadFire(this);
+
+                this.burnLife--;
+
+
+                // Slowly disappear
+                if (
+                    this.burnLife <= 0
+                ) {
+
+                    this.dead = true;
+
+                    return;
+                }
+            }
+        }
+
+
+        // ====================================================
+        // DISSOLVED IMAGE PIECES
+        // ====================================================
+
+        if (this.imagePiece) {
+
+            // Image pieces NEVER fly sideways
+            this.vx = 0;
+
+            this.vy += 0.38;
+
+            if (this.vy > 5)
+                this.vy = 5;
+
+
+            const nextY =
+                this.y + this.vy;
+
+
+            if (
+                nextY + this.size >= H
+            ) {
+
+                this.y =
+                    H - this.size;
+
+                this.vy = 0;
+
+                return;
+            }
+
+
+            if (
+                occupied(
+                    this.x + 2,
+                    nextY + this.size
+                )
+            ) {
+
+                this.vy = 0;
+
+                return;
+            }
+
+
+            this.y = nextY;
+
+            return;
+        }
+
+
+        // ====================================================
+        // BURNING MATERIAL
+        // ====================================================
+
+        if (this.burning) {
+
+            // Burning particles glow
+            // and slightly darken as they burn.
+
+            if (
+                this.burnTimer <= 0
+            ) {
+
+                const progress =
+                    1 -
+                    (
+                        this.burnLife /
+                        FIRE_LIFE
+                    );
+
+
+                if (
+                    progress > 0.6
+                ) {
+
+                    this.color =
+                        "#555";
+                }
+            }
+        }
+
+
+        // ====================================================
+        // STATIC
+        // ====================================================
+
+        if (
+            this.type === "stone" ||
+            this.type === "metal"
+        ) {
+
+            this.vx = 0;
+            this.vy = 0;
+
+            return;
+        }
+
+
+        // ====================================================
+        // GAS
+        // ====================================================
+
+        if (
+            this.type === "fire" ||
+            this.type === "smoke" ||
+            this.type === "steam"
+        ) {
+
+            this.vy -= 0.08;
+
+            this.vx *= 0.9;
+
+            this.life--;
+
+
+            // FIRE SPREADS
+            if (
+                this.type === "fire"
+            ) {
+
+                spreadFire(this);
+            }
+
+
+            if (
+                this.life <= 0
+            ) {
+
+                this.dead = true;
+
+                return;
+            }
+
+
+            this.x += this.vx;
+
+            this.y += this.vy;
+
+
+            if (
+                this.y < -20
+            ) {
+
+                this.dead = true;
+            }
+
+
+            return;
+        }
+
+
+        // ====================================================
+        // SOLID GRAVITY
+        // ====================================================
+
+        if (
+            this.type === "sand" ||
+            this.type === "dirt" ||
+            this.type === "salt"
+        ) {
+
+            this.vy += GRAVITY;
+
+            if (this.vy > 6)
+                this.vy = 6;
+        }
+
+
+        // ICE
+        if (
+            this.type === "ice"
+        ) {
+
+            this.vy += 0.3;
+
+            if (this.vy > 4)
+                this.vy = 4;
+        }
+
+
+        // ====================================================
+        // LIQUIDS
+        // ====================================================
+
+        if (
+            this.type === "water" ||
+            this.type === "oil" ||
+            this.type === "acid" ||
+            this.type === "lava"
+        ) {
+
+            this.vy += 0.25;
+
+            if (this.vy > 4)
+                this.vy = 4;
+
+            this.vx *= 0.92;
+        }
+
+
+        // ====================================================
+        // PLANT
+        // ====================================================
+
+        if (
+            this.type === "plant"
+        ) {
+
+            this.vy += 0.3;
+
+            if (this.vy > 4)
+                this.vy = 4;
+        }
+
+
+        // ====================================================
+        // POSITION
+        // ====================================================
+
+        let nx =
+            this.x + this.vx;
+
+        let ny =
+            this.y + this.vy;
+
+
+        // ====================================================
+        // WALLS
+        // ====================================================
+
+        if (nx < 0) {
+
+            nx = 0;
+            this.vx = 0;
+        }
+
+
+        if (
+            nx + this.size > W
+        ) {
+
+            nx =
+                W - this.size;
+
+            this.vx = 0;
+        }
+
+
+        // ====================================================
+        // FLOOR
+        // ====================================================
+
+        if (
+            ny + this.size >= H
+        ) {
+
+            this.y =
+                H - this.size;
+
+            this.vy = 0;
+
+            this.vx = 0;
+
+            return;
+        }
+
+
+        // ====================================================
+        // SOLID COLLISION
+        // ====================================================
+
+        const solid =
+            this.type === "sand" ||
+            this.type === "dirt" ||
+            this.type === "salt" ||
+            this.type === "ice" ||
+            this.type === "plant";
+
+
+        if (solid) {
+
+            if (
+                occupied(
+                    nx + 2,
+                    ny + this.size
+                )
+            ) {
+
+                // Try left
+                if (
+                    !occupied(
+                        this.x - this.size,
+                        this.y + this.size
+                    )
+                ) {
+
+                    this.x -= this.size;
+
+                    this.vx = 0;
+                    this.vy = 0;
+
+                    return;
+                }
+
+
+                // Try right
+                if (
+                    !occupied(
+                        this.x + this.size,
+                        this.y + this.size
+                    )
+                ) {
+
+                    this.x += this.size;
+
+                    this.vx = 0;
+                    this.vy = 0;
+
+                    return;
+                }
+
+
+                // Settled
+                this.vx = 0;
+                this.vy = 0;
+
+                return;
+            }
+        }
+
+
+        // ====================================================
+        // LIQUID COLLISION
+        // ====================================================
+
+        const liquid =
+            this.type === "water" ||
+            this.type === "oil" ||
+            this.type === "acid" ||
+            this.type === "lava";
+
+
+        if (liquid) {
+
+            if (
+                occupied(
+                    nx + 2,
+                    ny + this.size
+                )
+            ) {
+
+                this.vy = 0;
+
+
+                const direction =
+                    Math.random() < 0.5
+                        ? -1
+                        : 1;
+
+
+                if (
+                    !occupied(
+                        this.x +
+                        direction * this.size,
+                        this.y
+                    )
+                ) {
+
+                    this.x +=
+                        direction *
+                        this.size;
+
+                    this.vx =
+                        direction * 0.3;
+                }
+            }
+        }
+
+
+        this.x = nx;
+        this.y = ny;
+    }
+
+
+    // ========================================================
+    // DRAW
+    // ========================================================
+
+    draw() {
+
+        if (
+            this.burning &&
+            this.burnTimer <= 0
+        ) {
+
+            ctx.fillStyle =
+                "#ff6a00";
+
+            ctx.fillRect(
+                this.x - 1,
+                this.y - 1,
+                this.size + 2,
+                this.size + 2
+            );
+        }
+        else {
+
+            ctx.fillStyle =
+                this.color;
+
+            ctx.fillRect(
+                this.x,
+                this.y,
+                this.size,
+                this.size
+            );
+        }
+    }
+}
+
+
+// ============================================================
+// FIRE SPREAD
+// ============================================================
+
+function spreadFire(source) {
+
+    const radius =
+        FIRE_SPREAD_RADIUS;
+
+    const radiusSq =
+        radius * radius;
+
+
+    // Only inspect nearby particles.
+    // This is much cheaper than checking the entire
+    // particle array when possible.
+
+    const minX =
+        source.x - radius;
+
+    const maxX =
+        source.x + radius;
+
+    const minY =
+        source.y - radius;
+
+    const maxY =
+        source.y + radius;
+
+
+    for (
+        let i = 0;
+        i < particles.length;
+        i++
+    ) {
+
+        const target =
+            particles[i];
+
+
+        if (
+            target.dead ||
+            target === source ||
+            target.burning
+        )
+            continue;
+
+
+        if (
+            target.x < minX ||
+            target.x > maxX ||
+            target.y < minY ||
+            target.y > maxY
+        )
+            continue;
+
+
+        const dx =
+            target.x - source.x;
+
+        const dy =
+            target.y - source.y;
+
+
+        if (
+            dx * dx +
+            dy * dy >
+            radiusSq
+        )
+            continue;
+
+
+        // Things that can burn
+        if (
+            target.type === "sand" ||
+            target.type === "dirt" ||
+            target.type === "plant" ||
+            target.type === "oil" ||
+            target.imagePiece
+        ) {
+
+            target.startBurning();
+        }
+    }
+}
+
+
+// ============================================================
+// ADD PARTICLE
+// ============================================================
+
+function addParticle(
+    x,
+    y,
+    type,
+    color = null
+) {
+
+    if (
+        particles.length >=
+        MAX_PARTICLES
+    )
+        return null;
+
+
+    const p =
+        new Particle(
+            x,
+            y,
+            type,
+            color
+        );
+
+
+    particles.push(p);
+
+    return p;
+}
+
+
+// ============================================================
+// BRUSH
+// ============================================================
+
+function paint() {
+
+    if (paused)
+        return;
+
+
+    // EXPLOSION
+    if (
+        selectedElement ===
+        "explosion"
+    ) {
+
+        for (
+            let i = 0;
+            i < 50;
+            i++
+        ) {
+
+            if (
+                particles.length >=
+                MAX_PARTICLES
+            )
+                break;
+
+
+            const p =
+                addParticle(
+                    mouseX,
+                    mouseY,
+                    "fire"
+                );
+
+
+            if (!p)
+                continue;
+
+
+            const angle =
+                Math.random() *
+                Math.PI * 2;
+
+            const speed =
+                Math.random() * 4;
+
+
+            p.vx =
+                Math.cos(angle) *
+                speed;
+
+            p.vy =
+                Math.sin(angle) *
+                speed;
+        }
+
+        return;
+    }
+
+
+    const radius =
+        brushSize;
+
+    const spacing =
+        Math.max(
+            CELL,
+            radius / 2
+        );
+
+
+    for (
+        let y = -radius;
+        y <= radius;
+        y += spacing
+    ) {
+
+        for (
+            let x = -radius;
+            x <= radius;
+            x += spacing
+        ) {
+
+            if (
+                x * x +
+                y * y >
+                radius * radius
+            )
+                continue;
+
+
+            const p =
+                addParticle(
+                    mouseX + x,
+                    mouseY + y,
+                    selectedElement
+                );
+
+
+            // Fire immediately begins
+            // its chain reaction.
+            if (
+                p &&
+                selectedElement === "fire"
+            ) {
+
+                p.startBurning();
+            }
+        }
+    }
+}
+
+
+// ============================================================
+// MOUSE
+// ============================================================
+
+canvas.addEventListener(
+    "pointerdown",
+    e => {
+
+        mouseDown = true;
+
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+
+        paint();
+    }
+);
+
+
+canvas.addEventListener(
+    "pointermove",
+    e => {
+
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+
+        if (mouseDown)
+            paint();
+    }
+);
+
+
+window.addEventListener(
+    "pointerup",
+    () => {
+
+        mouseDown = false;
+    }
+);
+
+
+// ============================================================
+// IMAGE
+// ============================================================
+
+class SandboxImage {
+
+    constructor(img) {
+
+        this.canvas =
+            document.createElement(
+                "canvas"
+            );
+
+
+        this.ctx =
+            this.canvas.getContext(
+                "2d",
+                {
+                    willReadFrequently: true
+                }
+            );
+
+
+        const MAX = 320;
+
+
+        const scale =
+            Math.min(
+                1,
+                MAX / img.width,
+                MAX / img.height
+            );
+
+
+        this.width =
+            Math.max(
+                1,
+                Math.floor(
+                    img.width * scale
+                )
+            );
+
+
+        this.height =
+            Math.max(
+                1,
+                Math.floor(
+                    img.height * scale
+                )
+            );
+
+
+        this.canvas.width =
+            this.width;
+
+        this.canvas.height =
+            this.height;
+
+
+        this.ctx.drawImage(
+            img,
+            0,
+            0,
+            this.width,
+            this.height
+        );
+
+
+        this.data =
+            this.ctx.getImageData(
+                0,
+                0,
+                this.width,
+                this.height
+            );
+
+
+        this.x =
+            (W - this.width) / 2;
+
+        this.y = 20;
+
+        this.vy = 0;
+
+        this.grounded = false;
+
+        this.dead = false;
+
+        this.dissolveTimer = 0;
+    }
+
+
+    update() {
+
+        // ====================================================
+        // IMAGE FALLING
+        // ====================================================
+
+        if (!this.grounded) {
+
+            this.vy += 0.3;
+
+            if (this.vy > 5)
+                this.vy = 5;
+
+
+            const nextY =
+                this.y + this.vy;
+
+
+            if (
+                nextY +
+                this.height >= H
+            ) {
+
+                this.y =
+                    H - this.height;
+
+                this.grounded = true;
+
+                this.vy = 0;
+            }
+
+            else if (
+                imageHitsParticles(
+                    this,
+                    nextY
+                )
+            ) {
+
+                this.grounded = true;
+
+                this.vy = 0;
+            }
+
+            else {
+
+                this.y = nextY;
+            }
+        }
+
+
+        // ====================================================
+        // ACID
+        // ====================================================
+
+        this.dissolveTimer--;
+
+        if (
+            this.dissolveTimer <= 0
+        ) {
+
+            this.dissolveTimer = 2;
+
+            findAcid(this);
+        }
+    }
+
+
+    draw() {
+
+        this.ctx.putImageData(
+            this.data,
+            0,
+            0
+        );
+
+
+        ctx.drawImage(
+            this.canvas,
+            this.x,
+            this.y
+        );
+    }
+}
+
+
+// ============================================================
+// IMAGE COLLISION
+// ============================================================
+
+function imageHitsParticles(
+    image,
+    y
+) {
+
+    const step = 10;
+
+    const bottom =
+        y + image.height;
+
+
+    for (
+        let x = image.x;
+        x < image.x + image.width;
+        x += step
+    ) {
+
+        if (
+            occupied(
+                x,
+                bottom
+            )
+        ) {
+
+            return true;
+        }
+    }
+
+
+    return false;
+}
+
+
+// ============================================================
+// FIND ACID
+// ============================================================
+
+function findAcid(image) {
+
+    const radius = 8;
+
+
+    for (
+        let i = 0;
+        i < particles.length;
+        i++
+    ) {
+
+        const p =
+            particles[i];
+
+
+        if (
+            p.dead ||
+            p.type !== "acid"
+        )
+            continue;
+
+
+        if (
+            p.x >=
+                image.x - radius &&
+            p.x <=
+                image.x +
+                image.width +
+                radius &&
+            p.y >=
+                image.y - radius &&
+            p.y <=
+                image.y +
+                image.height +
+                radius
+        ) {
+
+            dissolve(
+                image,
+                p.x,
+                p.y
+            );
+
+            return;
+        }
+    }
+}
+
+
+// ============================================================
+// IMAGE DISSOLVE
+// ============================================================
+
+function dissolve(
+    image,
+    worldX,
+    worldY
+) {
+
+    const localX =
+        Math.floor(
+            worldX - image.x
+        );
+
+
+    const localY =
+        Math.floor(
+            worldY - image.y
+        );
+
+
+    const radius = 10;
+
+    const data =
+        image.data.data;
+
+
+    // 4x4 chunks = much better performance
+    const chunk = 4;
+
+
+    for (
+        let y =
+            localY - radius;
+        y <=
+            localY + radius;
+        y += chunk
+    ) {
+
+        for (
+            let x =
+                localX - radius;
+            x <=
+                localX + radius;
+            x += chunk
+        ) {
+
+            if (
+                x < 0 ||
+                y < 0 ||
+                x >= image.width ||
+                y >= image.height
+            )
+                continue;
+
+
+            const dx =
+                x - localX;
+
+            const dy =
+                y - localY;
+
+
+            if (
+                dx * dx +
+                dy * dy >
+                radius * radius
+            )
+                continue;
+
+
+            const index =
+                (
+                    y *
+                    image.width +
+                    x
+                ) * 4;
+
+
+            if (
+                data[index + 3] <= 20
+            )
+                continue;
+
+
+            const r =
+                data[index];
+
+            const g =
+                data[index + 1];
+
+            const b =
+                data[index + 2];
+
+
+            // Remove chunk
+            for (
+                let py = 0;
+                py < chunk;
+                py++
+            ) {
+
+                for (
+                    let px = 0;
+                    px < chunk;
+                    px++
+                ) {
+
+                    const xx =
+                        x + px;
+
+                    const yy =
+                        y + py;
+
+
+                    if (
+                        xx >= image.width ||
+                        yy >= image.height
+                    )
+                        continue;
+
+
+                    const idx =
+                        (
+                            yy *
+                            image.width +
+                            xx
+                        ) * 4;
+
+
+                    data[
+                        idx + 3
+                    ] = 0;
+                }
+            }
+
+
+            // Create ONE piece
+            if (
+                particles.length <
+                MAX_PARTICLES
+            ) {
+
+                const piece =
+                    addParticle(
+                        image.x + x,
+                        image.y + y,
+                        "imagePiece",
+                        `rgb(${r},${g},${b})`
+                    );
+
+
+                if (piece) {
+
+                    piece.imagePiece = true;
+
+                    piece.vx = 0;
+
+                    piece.vy = 0.2;
+
+                    piece.size = chunk;
+                }
+            }
+        }
+    }
+
+
+    image.ctx.putImageData(
+        image.data,
+        0,
+        0
+    );
+}
+
+
+// ============================================================
+// UPLOAD
+// ============================================================
+
+const uploadButton =
+    document.getElementById(
+        "uploadButton"
+    );
+
+
+const imageInput =
+    document.getElementById(
+        "imageInput"
+    );
+
+
+uploadButton.onclick = () => {
+
+    imageInput.click();
+};
+
+
+imageInput.onchange = e => {
+
+    const file =
+        e.target.files[0];
+
+    if (!file)
+        return;
+
+
+    const reader =
+        new FileReader();
+
+
+    reader.onload = event => {
+
+        const img =
+            new Image();
+
+
+        img.onload = () => {
+
+            images.push(
+                new SandboxImage(img)
+            );
+        };
+
+
+        img.src =
+            event.target.result;
+    };
+
+
+    reader.readAsDataURL(file);
+
+    imageInput.value = "";
+};
+
+
+// ============================================================
+// ELEMENT BUTTONS
+// ============================================================
+
+document
+    .querySelectorAll(
+        "[data-element]"
+    )
+    .forEach(button => {
+
+        button.onclick = () => {
+
+            selectedElement =
+                button.dataset.element;
+
+
+            document
+                .querySelectorAll(
+                    "[data-element]"
+                )
+                .forEach(b =>
+                    b.classList.remove(
+                        "active"
+                    )
+                );
+
+
+            button.classList.add(
+                "active"
+            );
+        };
+    });
+
+
+document
+    .querySelector(
+        '[data-element="sand"]'
+    )
+    .classList.add("active");
+
+
+// ============================================================
+// BRUSH
+// ============================================================
+
+const brush =
+    document.getElementById(
+        "brush"
+    );
+
+
+brush.oninput = () => {
+
+    brushSize =
+        Number(brush.value);
+
+
+    document.getElementById(
+        "brushValue"
+    ).textContent =
+        brushSize;
+};
+
+
+// ============================================================
+// CLEAR
+// ============================================================
+
+document
+    .getElementById("clear")
+    .onclick = () => {
+
+        particles.length = 0;
+
+        images.length = 0;
+
+        grid.fill(-1);
+    };
+
+
+// ============================================================
+// PAUSE
+// ============================================================
+
+document
+    .getElementById("pause")
+    .onclick = () => {
+
+        paused = !paused;
+
+
+        document.getElementById(
+            "pause"
+        ).textContent =
+            paused
+                ? "Resume"
+                : "Pause";
+    };
+
+
+// ============================================================
+// CLEANUP
+// ============================================================
+
+function cleanup() {
+
+    let write = 0;
+
+
+    for (
+        let i = 0;
+        i < particles.length;
+        i++
+    ) {
+
+        const p =
+            particles[i];
+
+
+        if (!p.dead) {
+
+            particles[write++] =
+                p;
+        }
+    }
+
+
+    particles.length =
+        write;
+
+
+    let imageWrite = 0;
+
+
+    for (
+        let i = 0;
+        i < images.length;
+        i++
+    ) {
+
+        if (!images[i].dead) {
+
+            images[imageWrite++] =
+                images[i];
+        }
+    }
+
+
+    images.length =
+        imageWrite;
+}
+
+
+// ============================================================
+// MAIN LOOP
+// ============================================================
+
+let fpsCounter = 0;
+
+let fpsTimer =
+    performance.now();
+
+
+function loop(time) {
+
+    requestAnimationFrame(loop);
+
+
+    ctx.fillStyle =
+        "#111";
+
+
+    ctx.fillRect(
+        0,
+        0,
+        W,
+        H
+    );
+
+
+    if (!paused) {
+
+        // ONE grid rebuild per frame
+        rebuildGrid();
+
+
+        // Images
+        for (
+            let i = 0;
+            i < images.length;
+            i++
+        ) {
+
+            images[i].update();
+        }
+
+
+        // Particles
+        for (
+            let i = 0;
+            i < particles.length;
+            i++
+        ) {
+
+            particles[i].update();
+        }
+
+
+        // Cleanup every 8 frames
+        if (
+            (fpsCounter & 7) === 0
+        ) {
+
+            cleanup();
+        }
+    }
+
+
+    // ========================================================
+    // DRAW PARTICLES
+    // ========================================================
+
+    for (
+        let i = 0;
+        i < particles.length;
+        i++
+    ) {
+
+        particles[i].draw();
+    }
+
+
+    // ========================================================
+    // DRAW IMAGES
+    // ========================================================
+
+    for (
+        let i = 0;
+        i < images.length;
+        i++
+    ) {
+
+        images[i].draw();
+    }
+
+
+    // ========================================================
+    // FPS
+    // ========================================================
+
+    fpsCounter++;
+
+
+    if (
+        time - fpsTimer >= 1000
+    ) {
+
+        document.getElementById(
+            "fps"
+        ).textContent =
+            fpsCounter;
+
+
+        document.getElementById(
+            "particleCount"
+        ).textContent =
+            particles.length;
+
+
+        fpsCounter = 0;
+
+        fpsTimer = time;
+    }
+}
+
+
+requestAnimationFrame(loop);
+
+</script>
+
+</body>
+</html>
