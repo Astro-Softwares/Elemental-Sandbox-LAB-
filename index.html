@@ -9,6 +9,7 @@
 * {
     box-sizing: border-box;
     user-select: none;
+    -webkit-user-select: none;
 }
 
 body {
@@ -25,6 +26,7 @@ canvas {
     height: 100vh;
     display: block;
     background: #111;
+    touch-action: none;
 }
 
 #ui {
@@ -36,7 +38,7 @@ canvas {
     border-radius: 14px;
     background: rgba(20,20,20,.92);
     color: white;
-    z-index: 10;
+    z-index: 100;
     box-shadow: 0 10px 30px rgba(0,0,0,.4);
 }
 
@@ -170,7 +172,6 @@ input[type="range"] {
 
 "use strict";
 
-
 // ============================================================
 // CANVAS
 // ============================================================
@@ -183,8 +184,8 @@ const ctx =
         alpha: false
     });
 
-let W = innerWidth;
-let H = innerHeight;
+let W = window.innerWidth;
+let H = window.innerHeight;
 
 canvas.width = W;
 canvas.height = H;
@@ -200,10 +201,17 @@ const MAX_PARTICLES = 9000;
 
 const GRAVITY = 0.45;
 
-// FIRE SETTINGS
-const FIRE_SPREAD_RADIUS = 10;
-const FIRE_DELAY = 15;
-const FIRE_LIFE = 35;
+// FIRE
+const FIRE_SPREAD_RADIUS = 12;
+const FIRE_DELAY = 12;
+const FIRE_LIFE = 40;
+
+// LAVA
+const LAVA_SMOKE_CHANCE = 0.035;
+const LAVA_SMOKE_DURATION = 5000;
+
+// SMOKE
+const SMOKE_LIFE = 5000;
 
 let particles = [];
 
@@ -219,6 +227,11 @@ let mouseX = 0;
 let mouseY = 0;
 
 let mouseDown = false;
+
+// Image dragging
+let draggedImage = null;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
 
 
 // ============================================================
@@ -255,8 +268,8 @@ window.addEventListener(
     "resize",
     () => {
 
-        W = innerWidth;
-        H = innerHeight;
+        W = window.innerWidth;
+        H = window.innerHeight;
 
         canvas.width = W;
         canvas.height = H;
@@ -273,10 +286,10 @@ window.addEventListener(
 function gridIndex(x, y) {
 
     const gx =
-        (x / CELL) | 0;
+        Math.floor(x / CELL);
 
     const gy =
-        (y / CELL) | 0;
+        Math.floor(y / CELL);
 
     if (
         gx < 0 ||
@@ -284,6 +297,7 @@ function gridIndex(x, y) {
         gy < 0 ||
         gy >= GRID_H
     ) {
+
         return -2;
     }
 
@@ -307,13 +321,11 @@ function rebuildGrid() {
         if (p.dead)
             continue;
 
-
         const index =
             gridIndex(
                 p.x,
                 p.y
             );
-
 
         if (index >= 0)
             grid[index] = i;
@@ -393,7 +405,7 @@ class Particle {
 
         this.imagePiece = false;
 
-        // FIRE STATE
+        // Fire state
         this.burning = false;
         this.burnTimer = 0;
         this.burnLife = 0;
@@ -402,11 +414,14 @@ class Particle {
         this.life =
             120 +
             Math.random() * 150;
+
+        // Lava smoke timer
+        this.lavaSmokeStarted = null;
     }
 
 
     // ========================================================
-    // START BURNING
+    // FIRE
     // ========================================================
 
     startBurning() {
@@ -415,7 +430,6 @@ class Particle {
             return;
 
 
-        // Things fire cannot burn
         if (
             this.type === "stone" ||
             this.type === "metal" ||
@@ -431,12 +445,10 @@ class Particle {
 
         this.burning = true;
 
-        // Delay before it spreads
         this.burnTimer =
             FIRE_DELAY +
             Math.random() * 8;
 
-        // How long it remains burning
         this.burnLife =
             FIRE_LIFE +
             Math.random() * 20;
@@ -462,7 +474,6 @@ class Particle {
             this.burnTimer--;
 
 
-            // Spread after delay
             if (
                 this.burnTimer <= 0
             ) {
@@ -472,7 +483,6 @@ class Particle {
                 this.burnLife--;
 
 
-                // Slowly disappear
                 if (
                     this.burnLife <= 0
                 ) {
@@ -486,12 +496,11 @@ class Particle {
 
 
         // ====================================================
-        // DISSOLVED IMAGE PIECES
+        // IMAGE PIECES
         // ====================================================
 
         if (this.imagePiece) {
 
-            // Image pieces NEVER fly sideways
             this.vx = 0;
 
             this.vy += 0.38;
@@ -505,7 +514,8 @@ class Particle {
 
 
             if (
-                nextY + this.size >= H
+                nextY +
+                this.size >= H
             ) {
 
                 this.y =
@@ -533,38 +543,6 @@ class Particle {
             this.y = nextY;
 
             return;
-        }
-
-
-        // ====================================================
-        // BURNING MATERIAL
-        // ====================================================
-
-        if (this.burning) {
-
-            // Burning particles glow
-            // and slightly darken as they burn.
-
-            if (
-                this.burnTimer <= 0
-            ) {
-
-                const progress =
-                    1 -
-                    (
-                        this.burnLife /
-                        FIRE_LIFE
-                    );
-
-
-                if (
-                    progress > 0.6
-                ) {
-
-                    this.color =
-                        "#555";
-                }
-            }
         }
 
 
@@ -598,10 +576,50 @@ class Particle {
 
             this.vx *= 0.9;
 
-            this.life--;
+
+            // Smoke uses a real-time 5 second lifetime
+
+            if (
+                this.type === "smoke"
+            ) {
+
+                if (
+                    !this.smokeCreatedAt
+                ) {
+
+                    this.smokeCreatedAt =
+                        performance.now();
+                }
 
 
-            // FIRE SPREADS
+                if (
+                    performance.now() -
+                    this.smokeCreatedAt >=
+                    SMOKE_LIFE
+                ) {
+
+                    this.dead = true;
+
+                    return;
+                }
+
+            } else {
+
+                this.life--;
+
+                if (
+                    this.life <= 0
+                ) {
+
+                    this.dead = true;
+
+                    return;
+                }
+            }
+
+
+            // Fire spreads
+
             if (
                 this.type === "fire"
             ) {
@@ -610,18 +628,7 @@ class Particle {
             }
 
 
-            if (
-                this.life <= 0
-            ) {
-
-                this.dead = true;
-
-                return;
-            }
-
-
             this.x += this.vx;
-
             this.y += this.vy;
 
 
@@ -638,7 +645,7 @@ class Particle {
 
 
         // ====================================================
-        // SOLID GRAVITY
+        // SOLIDS
         // ====================================================
 
         if (
@@ -654,7 +661,10 @@ class Particle {
         }
 
 
+        // ====================================================
         // ICE
+        // ====================================================
+
         if (
             this.type === "ice"
         ) {
@@ -683,6 +693,51 @@ class Particle {
                 this.vy = 4;
 
             this.vx *= 0.92;
+
+
+            // =================================================
+            // LAVA SMOKE
+            // =================================================
+
+            if (
+                this.type === "lava"
+            ) {
+
+                // Start the 5-second smoke timer
+                // the first time this lava particle updates.
+
+                if (
+                    this.lavaSmokeStarted === null
+                ) {
+
+                    this.lavaSmokeStarted =
+                        performance.now();
+                }
+
+
+                const smokeAge =
+                    performance.now() -
+                    this.lavaSmokeStarted;
+
+
+                // Lava only creates smoke for 5 seconds.
+
+                if (
+                    smokeAge <
+                    LAVA_SMOKE_DURATION
+                ) {
+
+                    if (
+                        Math.random() <
+                        LAVA_SMOKE_CHANCE
+                    ) {
+
+                        createLavaSmoke(
+                            this
+                        );
+                    }
+                }
+            }
         }
 
 
@@ -719,6 +774,7 @@ class Particle {
         if (nx < 0) {
 
             nx = 0;
+
             this.vx = 0;
         }
 
@@ -746,7 +802,6 @@ class Particle {
                 H - this.size;
 
             this.vy = 0;
-
             this.vx = 0;
 
             return;
@@ -774,15 +829,19 @@ class Particle {
                 )
             ) {
 
-                // Try left
+                // Left
+
                 if (
                     !occupied(
-                        this.x - this.size,
-                        this.y + this.size
+                        this.x -
+                        this.size,
+                        this.y +
+                        this.size
                     )
                 ) {
 
-                    this.x -= this.size;
+                    this.x -=
+                        this.size;
 
                     this.vx = 0;
                     this.vy = 0;
@@ -791,15 +850,19 @@ class Particle {
                 }
 
 
-                // Try right
+                // Right
+
                 if (
                     !occupied(
-                        this.x + this.size,
-                        this.y + this.size
+                        this.x +
+                        this.size,
+                        this.y +
+                        this.size
                     )
                 ) {
 
-                    this.x += this.size;
+                    this.x +=
+                        this.size;
 
                     this.vx = 0;
                     this.vy = 0;
@@ -809,6 +872,7 @@ class Particle {
 
 
                 // Settled
+
                 this.vx = 0;
                 this.vy = 0;
 
@@ -849,7 +913,8 @@ class Particle {
                 if (
                     !occupied(
                         this.x +
-                        direction * this.size,
+                        direction *
+                        this.size,
                         this.y
                     )
                 ) {
@@ -890,8 +955,8 @@ class Particle {
                 this.size + 2,
                 this.size + 2
             );
-        }
-        else {
+
+        } else {
 
             ctx.fillStyle =
                 this.color;
@@ -908,6 +973,54 @@ class Particle {
 
 
 // ============================================================
+// LAVA SMOKE
+// ============================================================
+
+function createLavaSmoke(lava) {
+
+    if (
+        particles.length >=
+        MAX_PARTICLES - 20
+    ) {
+
+        return;
+    }
+
+
+    const smoke =
+        addParticle(
+            lava.x +
+            Math.random() *
+            lava.size,
+
+            lava.y - 2,
+
+            "smoke"
+        );
+
+
+    if (!smoke)
+        return;
+
+
+    smoke.vx =
+        (
+            Math.random() -
+            0.5
+        ) * 0.5;
+
+
+    smoke.vy =
+        -0.4 -
+        Math.random() * 0.8;
+
+
+    smoke.smokeCreatedAt =
+        performance.now();
+}
+
+
+// ============================================================
 // FIRE SPREAD
 // ============================================================
 
@@ -918,23 +1031,6 @@ function spreadFire(source) {
 
     const radiusSq =
         radius * radius;
-
-
-    // Only inspect nearby particles.
-    // This is much cheaper than checking the entire
-    // particle array when possible.
-
-    const minX =
-        source.x - radius;
-
-    const maxX =
-        source.x + radius;
-
-    const minY =
-        source.y - radius;
-
-    const maxY =
-        source.y + radius;
 
 
     for (
@@ -955,20 +1051,20 @@ function spreadFire(source) {
             continue;
 
 
-        if (
-            target.x < minX ||
-            target.x > maxX ||
-            target.y < minY ||
-            target.y > maxY
-        )
-            continue;
-
-
         const dx =
-            target.x - source.x;
+            target.x -
+            source.x;
 
         const dy =
-            target.y - source.y;
+            target.y -
+            source.y;
+
+
+        if (
+            Math.abs(dx) > radius ||
+            Math.abs(dy) > radius
+        )
+            continue;
 
 
         if (
@@ -979,7 +1075,6 @@ function spreadFire(source) {
             continue;
 
 
-        // Things that can burn
         if (
             target.type === "sand" ||
             target.type === "dirt" ||
@@ -1008,8 +1103,10 @@ function addParticle(
     if (
         particles.length >=
         MAX_PARTICLES
-    )
+    ) {
+
         return null;
+    }
 
 
     const p =
@@ -1028,7 +1125,7 @@ function addParticle(
 
 
 // ============================================================
-// BRUSH
+// PAINT
 // ============================================================
 
 function paint() {
@@ -1037,7 +1134,8 @@ function paint() {
         return;
 
 
-    // EXPLOSION
+    // Explosion
+
     if (
         selectedElement ===
         "explosion"
@@ -1049,13 +1147,6 @@ function paint() {
             i++
         ) {
 
-            if (
-                particles.length >=
-                MAX_PARTICLES
-            )
-                break;
-
-
             const p =
                 addParticle(
                     mouseX,
@@ -1065,25 +1156,29 @@ function paint() {
 
 
             if (!p)
-                continue;
+                break;
 
 
             const angle =
                 Math.random() *
-                Math.PI * 2;
+                Math.PI *
+                2;
+
 
             const speed =
-                Math.random() * 4;
+                Math.random() * 5;
 
 
             p.vx =
                 Math.cos(angle) *
                 speed;
 
+
             p.vy =
                 Math.sin(angle) *
                 speed;
         }
+
 
         return;
     }
@@ -1091,6 +1186,7 @@ function paint() {
 
     const radius =
         brushSize;
+
 
     const spacing =
         Math.max(
@@ -1127,11 +1223,10 @@ function paint() {
                 );
 
 
-            // Fire immediately begins
-            // its chain reaction.
             if (
                 p &&
-                selectedElement === "fire"
+                selectedElement ===
+                    "fire"
             ) {
 
                 p.startBurning();
@@ -1142,47 +1237,7 @@ function paint() {
 
 
 // ============================================================
-// MOUSE
-// ============================================================
-
-canvas.addEventListener(
-    "pointerdown",
-    e => {
-
-        mouseDown = true;
-
-        mouseX = e.clientX;
-        mouseY = e.clientY;
-
-        paint();
-    }
-);
-
-
-canvas.addEventListener(
-    "pointermove",
-    e => {
-
-        mouseX = e.clientX;
-        mouseY = e.clientY;
-
-        if (mouseDown)
-            paint();
-    }
-);
-
-
-window.addEventListener(
-    "pointerup",
-    () => {
-
-        mouseDown = false;
-    }
-);
-
-
-// ============================================================
-// IMAGE
+// IMAGE CLASS
 // ============================================================
 
 class SandboxImage {
@@ -1261,81 +1316,86 @@ class SandboxImage {
         this.x =
             (W - this.width) / 2;
 
-        this.y = 20;
+        this.y = 30;
 
         this.vy = 0;
 
         this.grounded = false;
 
-        this.dead = false;
+        this.dragging = false;
 
-        this.dissolveTimer = 0;
+        this.dead = false;
     }
 
 
     update() {
 
         // ====================================================
-        // IMAGE FALLING
+        // FALLING
         // ====================================================
 
-        if (!this.grounded) {
+        if (!this.dragging) {
 
-            this.vy += 0.3;
+            if (!this.grounded) {
 
-            if (this.vy > 5)
-                this.vy = 5;
+                this.vy += 0.3;
 
-
-            const nextY =
-                this.y + this.vy;
+                if (this.vy > 5)
+                    this.vy = 5;
 
 
-            if (
-                nextY +
-                this.height >= H
-            ) {
+                const nextY =
+                    this.y + this.vy;
 
-                this.y =
-                    H - this.height;
 
-                this.grounded = true;
+                if (
+                    nextY +
+                    this.height >= H
+                ) {
 
-                this.vy = 0;
-            }
+                    this.y =
+                        H - this.height;
 
-            else if (
-                imageHitsParticles(
-                    this,
-                    nextY
-                )
-            ) {
+                    this.grounded = true;
 
-                this.grounded = true;
+                    this.vy = 0;
 
-                this.vy = 0;
-            }
+                } else if (
+                    imageHitsParticles(
+                        this,
+                        nextY
+                    )
+                ) {
 
-            else {
+                    this.grounded = true;
 
-                this.y = nextY;
+                    this.vy = 0;
+
+                } else {
+
+                    this.y = nextY;
+                }
             }
         }
 
 
-        // ====================================================
-        // ACID
-        // ====================================================
+        // Acid + Lava
 
-        this.dissolveTimer--;
+        findAcid(this);
+
+
+        // Fire
+
+        findFire(this);
+
+
+        // Remove empty image
 
         if (
-            this.dissolveTimer <= 0
+            imageIsEmpty(this)
         ) {
 
-            this.dissolveTimer = 2;
-
-            findAcid(this);
+            this.dead = true;
         }
     }
 
@@ -1354,7 +1414,63 @@ class SandboxImage {
             this.x,
             this.y
         );
+
+
+        if (this.dragging) {
+
+            ctx.strokeStyle =
+                "rgba(255,255,255,.8)";
+
+            ctx.lineWidth = 2;
+
+            ctx.strokeRect(
+                this.x,
+                this.y,
+                this.width,
+                this.height
+            );
+        }
     }
+}
+
+
+// ============================================================
+// GET IMAGE AT POSITION
+// ============================================================
+
+function getImageAt(x, y) {
+
+    for (
+        let i = images.length - 1;
+        i >= 0;
+        i--
+    ) {
+
+        const image =
+            images[i];
+
+
+        if (image.dead)
+            continue;
+
+
+        if (
+            x >= image.x &&
+            x <=
+                image.x +
+                image.width &&
+            y >= image.y &&
+            y <=
+                image.y +
+                image.height
+        ) {
+
+            return image;
+        }
+    }
+
+
+    return null;
 }
 
 
@@ -1370,12 +1486,15 @@ function imageHitsParticles(
     const step = 10;
 
     const bottom =
-        y + image.height;
+        y +
+        image.height;
 
 
     for (
         let x = image.x;
-        x < image.x + image.width;
+        x <=
+            image.x +
+            image.width;
         x += step
     ) {
 
@@ -1396,12 +1515,12 @@ function imageHitsParticles(
 
 
 // ============================================================
-// FIND ACID
+// ACID + LAVA MELTING
 // ============================================================
 
 function findAcid(image) {
 
-    const radius = 8;
+    const radius = 10;
 
 
     for (
@@ -1414,9 +1533,13 @@ function findAcid(image) {
             particles[i];
 
 
+        if (p.dead)
+            continue;
+
+
         if (
-            p.dead ||
-            p.type !== "acid"
+            p.type !== "acid" &&
+            p.type !== "lava"
         )
             continue;
 
@@ -1424,23 +1547,38 @@ function findAcid(image) {
         if (
             p.x >=
                 image.x - radius &&
+
             p.x <=
                 image.x +
                 image.width +
                 radius &&
+
             p.y >=
                 image.y - radius &&
+
             p.y <=
                 image.y +
                 image.height +
                 radius
         ) {
 
-            dissolve(
+            dissolveImage(
                 image,
                 p.x,
                 p.y
             );
+
+
+            // Lava touching a picture
+            // creates additional smoke.
+
+            if (
+                p.type === "lava"
+            ) {
+
+                createLavaSmoke(p);
+            }
+
 
             return;
         }
@@ -1449,10 +1587,71 @@ function findAcid(image) {
 
 
 // ============================================================
-// IMAGE DISSOLVE
+// FIRE MELTING
 // ============================================================
 
-function dissolve(
+function findFire(image) {
+
+    const radius = 12;
+
+
+    for (
+        let i = 0;
+        i < particles.length;
+        i++
+    ) {
+
+        const p =
+            particles[i];
+
+
+        if (p.dead)
+            continue;
+
+
+        if (
+            p.type !== "fire" &&
+            !p.burning
+        )
+            continue;
+
+
+        if (
+            p.x >=
+                image.x - radius &&
+
+            p.x <=
+                image.x +
+                image.width +
+                radius &&
+
+            p.y >=
+                image.y - radius &&
+
+            p.y <=
+                image.y +
+                image.height +
+                radius
+        ) {
+
+            burnImage(
+                image,
+                p.x,
+                p.y
+            );
+
+
+            return;
+        }
+    }
+}
+
+
+// ============================================================
+// DISSOLVE IMAGE
+// ============================================================
+
+function dissolveImage(
     image,
     worldX,
     worldY
@@ -1460,39 +1659,43 @@ function dissolve(
 
     const localX =
         Math.floor(
-            worldX - image.x
+            worldX -
+            image.x
         );
 
 
     const localY =
         Math.floor(
-            worldY - image.y
+            worldY -
+            image.y
         );
 
 
-    const radius = 10;
+    const radius = 12;
+
+    const chunk = 4;
 
     const data =
         image.data.data;
 
 
-    // 4x4 chunks = much better performance
-    const chunk = 4;
-
-
     for (
         let y =
             localY - radius;
+
         y <=
             localY + radius;
+
         y += chunk
     ) {
 
         for (
             let x =
                 localX - radius;
+
             x <=
                 localX + radius;
+
             x += chunk
         ) {
 
@@ -1529,7 +1732,7 @@ function dissolve(
 
 
             if (
-                data[index + 3] <= 20
+                data[index + 3] < 20
             )
                 continue;
 
@@ -1544,7 +1747,6 @@ function dissolve(
                 data[index + 2];
 
 
-            // Remove chunk
             for (
                 let py = 0;
                 py < chunk;
@@ -1586,7 +1788,8 @@ function dissolve(
             }
 
 
-            // Create ONE piece
+            // Falling picture debris
+
             if (
                 particles.length <
                 MAX_PARTICLES
@@ -1605,11 +1808,12 @@ function dissolve(
 
                     piece.imagePiece = true;
 
-                    piece.vx = 0;
-
-                    piece.vy = 0.2;
-
                     piece.size = chunk;
+
+                    piece.vy =
+                        0.2 +
+                        Math.random() *
+                        0.4;
                 }
             }
         }
@@ -1621,6 +1825,214 @@ function dissolve(
         0,
         0
     );
+}
+
+
+// ============================================================
+// FIRE BURN IMAGE
+// ============================================================
+
+function burnImage(
+    image,
+    worldX,
+    worldY
+) {
+
+    const localX =
+        Math.floor(
+            worldX -
+            image.x
+        );
+
+
+    const localY =
+        Math.floor(
+            worldY -
+            image.y
+        );
+
+
+    const radius = 9;
+
+    const chunk = 3;
+
+    const data =
+        image.data.data;
+
+
+    for (
+        let y =
+            localY - radius;
+
+        y <=
+            localY + radius;
+
+        y += chunk
+    ) {
+
+        for (
+            let x =
+                localX - radius;
+
+            x <=
+                localX + radius;
+
+            x += chunk
+        ) {
+
+            if (
+                x < 0 ||
+                y < 0 ||
+                x >= image.width ||
+                y >= image.height
+            )
+                continue;
+
+
+            const dx =
+                x - localX;
+
+            const dy =
+                y - localY;
+
+
+            if (
+                dx * dx +
+                dy * dy >
+                radius * radius
+            )
+                continue;
+
+
+            const index =
+                (
+                    y *
+                    image.width +
+                    x
+                ) * 4;
+
+
+            if (
+                data[index + 3] < 20
+            )
+                continue;
+
+
+            const r =
+                data[index];
+
+            const g =
+                data[index + 1];
+
+            const b =
+                data[index + 2];
+
+
+            for (
+                let py = 0;
+                py < chunk;
+                py++
+            ) {
+
+                for (
+                    let px = 0;
+                    px < chunk;
+                    px++
+                ) {
+
+                    const xx =
+                        x + px;
+
+                    const yy =
+                        y + py;
+
+
+                    if (
+                        xx >= image.width ||
+                        yy >= image.height
+                    )
+                        continue;
+
+
+                    const idx =
+                        (
+                            yy *
+                            image.width +
+                            xx
+                        ) * 4;
+
+
+                    data[
+                        idx + 3
+                    ] = 0;
+                }
+            }
+
+
+            if (
+                Math.random() < 0.5 &&
+                particles.length <
+                MAX_PARTICLES
+            ) {
+
+                const piece =
+                    addParticle(
+                        image.x + x,
+                        image.y + y,
+                        "imagePiece",
+                        `rgb(${r},${g},${b})`
+                    );
+
+
+                if (piece) {
+
+                    piece.imagePiece = true;
+
+                    piece.size = chunk;
+
+                    piece.vy =
+                        0.5 +
+                        Math.random();
+                }
+            }
+        }
+    }
+
+
+    image.ctx.putImageData(
+        image.data,
+        0,
+        0
+    );
+}
+
+
+// ============================================================
+// IMAGE EMPTY
+// ============================================================
+
+function imageIsEmpty(image) {
+
+    const data =
+        image.data.data;
+
+
+    for (
+        let i = 3;
+        i < data.length;
+        i += 32
+    ) {
+
+        if (
+            data[i] > 20
+        ) {
+
+            return false;
+        }
+    }
+
+
+    return true;
 }
 
 
@@ -1640,48 +2052,59 @@ const imageInput =
     );
 
 
-uploadButton.onclick = () => {
+uploadButton.addEventListener(
+    "click",
+    () => {
 
-    imageInput.click();
-};
-
-
-imageInput.onchange = e => {
-
-    const file =
-        e.target.files[0];
-
-    if (!file)
-        return;
+        imageInput.click();
+    }
+);
 
 
-    const reader =
-        new FileReader();
+imageInput.addEventListener(
+    "change",
+    e => {
+
+        const file =
+            e.target.files[0];
 
 
-    reader.onload = event => {
-
-        const img =
-            new Image();
+        if (!file)
+            return;
 
 
-        img.onload = () => {
-
-            images.push(
-                new SandboxImage(img)
-            );
-        };
+        const reader =
+            new FileReader();
 
 
-        img.src =
-            event.target.result;
-    };
+        reader.onload =
+            event => {
+
+                const img =
+                    new Image();
 
 
-    reader.readAsDataURL(file);
+                img.onload =
+                    () => {
 
-    imageInput.value = "";
-};
+                        images.push(
+                            new SandboxImage(
+                                img
+                            )
+                        );
+                    };
+
+
+                img.src =
+                    event.target.result;
+            };
+
+
+        reader.readAsDataURL(file);
+
+        imageInput.value = "";
+    }
+);
 
 
 // ============================================================
@@ -1694,27 +2117,31 @@ document
     )
     .forEach(button => {
 
-        button.onclick = () => {
+        button.addEventListener(
+            "click",
+            () => {
 
-            selectedElement =
-                button.dataset.element;
+                selectedElement =
+                    button.dataset.element;
 
 
-            document
-                .querySelectorAll(
-                    "[data-element]"
-                )
-                .forEach(b =>
-                    b.classList.remove(
-                        "active"
+                document
+                    .querySelectorAll(
+                        "[data-element]"
                     )
+                    .forEach(b => {
+
+                        b.classList.remove(
+                            "active"
+                        );
+                    });
+
+
+                button.classList.add(
+                    "active"
                 );
-
-
-            button.classList.add(
-                "active"
-            );
-        };
+            }
+        );
     });
 
 
@@ -1735,17 +2162,235 @@ const brush =
     );
 
 
-brush.oninput = () => {
+brush.addEventListener(
+    "input",
+    () => {
 
-    brushSize =
-        Number(brush.value);
+        brushSize =
+            Number(
+                brush.value
+            );
 
 
-    document.getElementById(
-        "brushValue"
-    ).textContent =
-        brushSize;
-};
+        document.getElementById(
+            "brushValue"
+        ).textContent =
+            brushSize;
+    }
+);
+
+
+// ============================================================
+// MOUSE POSITION
+// ============================================================
+
+function updateMousePosition(e) {
+
+    const rect =
+        canvas.getBoundingClientRect();
+
+
+    mouseX =
+        (e.clientX - rect.left) *
+        (canvas.width / rect.width);
+
+
+    mouseY =
+        (e.clientY - rect.top) *
+        (canvas.height / rect.height);
+}
+
+
+// ============================================================
+// POINTER DOWN
+// ============================================================
+
+canvas.addEventListener(
+    "pointerdown",
+    e => {
+
+        updateMousePosition(e);
+
+        mouseDown = true;
+
+
+        // Picture dragging
+
+        const image =
+            getImageAt(
+                mouseX,
+                mouseY
+            );
+
+
+        if (image) {
+
+            draggedImage =
+                image;
+
+
+            dragOffsetX =
+                mouseX -
+                image.x;
+
+
+            dragOffsetY =
+                mouseY -
+                image.y;
+
+
+            image.dragging = true;
+
+            image.grounded = false;
+
+            image.vy = 0;
+
+
+            // Bring to front
+
+            const index =
+                images.indexOf(
+                    image
+                );
+
+
+            if (index !== -1) {
+
+                images.splice(
+                    index,
+                    1
+                );
+
+                images.push(
+                    image
+                );
+            }
+
+
+            return;
+        }
+
+
+        // Otherwise spawn particles
+
+        paint();
+    }
+);
+
+
+// ============================================================
+// POINTER MOVE
+// ============================================================
+
+canvas.addEventListener(
+    "pointermove",
+    e => {
+
+        updateMousePosition(e);
+
+
+        // Drag picture
+
+        if (draggedImage) {
+
+            draggedImage.x =
+                mouseX -
+                dragOffsetX;
+
+
+            draggedImage.y =
+                mouseY -
+                dragOffsetY;
+
+
+            // Keep inside screen
+
+            if (
+                draggedImage.x < 0
+            ) {
+
+                draggedImage.x = 0;
+            }
+
+
+            if (
+                draggedImage.y < 0
+            ) {
+
+                draggedImage.y = 0;
+            }
+
+
+            if (
+                draggedImage.x +
+                draggedImage.width >
+                W
+            ) {
+
+                draggedImage.x =
+                    W -
+                    draggedImage.width;
+            }
+
+
+            if (
+                draggedImage.y +
+                draggedImage.height >
+                H
+            ) {
+
+                draggedImage.y =
+                    H -
+                    draggedImage.height;
+            }
+
+
+            return;
+        }
+
+
+        // Paint
+
+        if (mouseDown) {
+
+            paint();
+        }
+    }
+);
+
+
+// ============================================================
+// POINTER UP
+// ============================================================
+
+function releasePointer() {
+
+    mouseDown = false;
+
+
+    if (draggedImage) {
+
+        draggedImage.dragging = false;
+
+        draggedImage.grounded = false;
+
+        draggedImage.vy = 0;
+
+        draggedImage = null;
+    }
+}
+
+
+window.addEventListener(
+    "pointerup",
+    releasePointer
+);
+
+
+window.addEventListener(
+    "pointercancel",
+    releasePointer
+);
 
 
 // ============================================================
@@ -1754,14 +2399,19 @@ brush.oninput = () => {
 
 document
     .getElementById("clear")
-    .onclick = () => {
+    .addEventListener(
+        "click",
+        () => {
 
-        particles.length = 0;
+            particles.length = 0;
 
-        images.length = 0;
+            images.length = 0;
 
-        grid.fill(-1);
-    };
+            draggedImage = null;
+
+            grid.fill(-1);
+        }
+    );
 
 
 // ============================================================
@@ -1770,18 +2420,21 @@ document
 
 document
     .getElementById("pause")
-    .onclick = () => {
+    .addEventListener(
+        "click",
+        () => {
 
-        paused = !paused;
+            paused = !paused;
 
 
-        document.getElementById(
-            "pause"
-        ).textContent =
-            paused
-                ? "Resume"
-                : "Pause";
-    };
+            document.getElementById(
+                "pause"
+            ).textContent =
+                paused
+                    ? "Resume"
+                    : "Pause";
+        }
+    );
 
 
 // ============================================================
@@ -1799,14 +2452,12 @@ function cleanup() {
         i++
     ) {
 
-        const p =
-            particles[i];
-
-
-        if (!p.dead) {
+        if (
+            !particles[i].dead
+        ) {
 
             particles[write++] =
-                p;
+                particles[i];
         }
     }
 
@@ -1824,7 +2475,9 @@ function cleanup() {
         i++
     ) {
 
-        if (!images[i].dead) {
+        if (
+            !images[i].dead
+        ) {
 
             images[imageWrite++] =
                 images[i];
@@ -1841,7 +2494,7 @@ function cleanup() {
 // MAIN LOOP
 // ============================================================
 
-let fpsCounter = 0;
+let frameCounter = 0;
 
 let fpsTimer =
     performance.now();
@@ -1866,11 +2519,11 @@ function loop(time) {
 
     if (!paused) {
 
-        // ONE grid rebuild per frame
         rebuildGrid();
 
 
         // Images
+
         for (
             let i = 0;
             i < images.length;
@@ -1882,6 +2535,7 @@ function loop(time) {
 
 
         // Particles
+
         for (
             let i = 0;
             i < particles.length;
@@ -1892,9 +2546,11 @@ function loop(time) {
         }
 
 
-        // Cleanup every 8 frames
+        frameCounter++;
+
+
         if (
-            (fpsCounter & 7) === 0
+            frameCounter % 8 === 0
         ) {
 
             cleanup();
@@ -1902,9 +2558,7 @@ function loop(time) {
     }
 
 
-    // ========================================================
-    // DRAW PARTICLES
-    // ========================================================
+    // Draw particles
 
     for (
         let i = 0;
@@ -1916,9 +2570,7 @@ function loop(time) {
     }
 
 
-    // ========================================================
-    // DRAW IMAGES
-    // ========================================================
+    // Draw images
 
     for (
         let i = 0;
@@ -1930,12 +2582,7 @@ function loop(time) {
     }
 
 
-    // ========================================================
     // FPS
-    // ========================================================
-
-    fpsCounter++;
-
 
     if (
         time - fpsTimer >= 1000
@@ -1944,7 +2591,7 @@ function loop(time) {
         document.getElementById(
             "fps"
         ).textContent =
-            fpsCounter;
+            frameCounter;
 
 
         document.getElementById(
@@ -1953,7 +2600,7 @@ function loop(time) {
             particles.length;
 
 
-        fpsCounter = 0;
+        frameCounter = 0;
 
         fpsTimer = time;
     }
